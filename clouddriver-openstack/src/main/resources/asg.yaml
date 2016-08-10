@@ -1,4 +1,4 @@
-heat_template_version: 2015-04-30
+heat_template_version: 2016-04-08
 description: Auto scaling group for Spinnaker
 parameters:
   flavor:
@@ -7,9 +7,6 @@ parameters:
   image:
     type: string
     description: Image used for servers
-  internal_port:
-    type: string
-    description: Internal app port for each server
   max_size:
     type: number
     description: Maximum cluster size
@@ -22,9 +19,12 @@ parameters:
   network_id:
     type: string
     description: Network used by the servers
-  pool_id:
-    type: string
-    description: Load balancer to use for this group
+  pool_ids:
+    type: comma_delimited_list
+    description: Load balancer pools to use for this group
+  internal_ports:
+    type: comma_delimited_list
+    description: Internal app ports for each server
   security_groups:
     type: comma_delimited_list
     description: Security groups to use
@@ -79,11 +79,11 @@ resources:
         properties:
           flavor: {get_param: flavor}
           image: {get_param: image}
-          internal_port: {get_param: internal_port}
+          internal_ports: {get_param: internal_ports}
           # This is used by ceilometer to autoscale against instances that are part of this stack
           metadata: {"metering.stack": {get_param: "OS::stack_id"}}
           network_id: {get_param: network_id}
-          pool_id: {get_param: pool_id}
+          pool_ids: {get_param: pool_ids}
           security_groups: {get_param: security_groups}
           subnet_id: {get_param: subnet_id}
   web_server_scaleup_policy:
