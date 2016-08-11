@@ -22,12 +22,16 @@ import com.netflix.spinnaker.clouddriver.deploy.DeploymentResult
 import com.netflix.spinnaker.clouddriver.openstack.client.OpenstackClientProvider
 import com.netflix.spinnaker.clouddriver.openstack.deploy.OpenstackServerGroupNameResolver
 import com.netflix.spinnaker.clouddriver.openstack.deploy.description.servergroup.DeployOpenstackAtomicOperationDescription
+import com.netflix.spinnaker.clouddriver.openstack.deploy.description.servergroup.MemberData
 import com.netflix.spinnaker.clouddriver.openstack.deploy.exception.OpenstackOperationException
+import com.netflix.spinnaker.clouddriver.openstack.deploy.ops.PoolMemberAware
 import com.netflix.spinnaker.clouddriver.orchestration.AtomicOperation
 import com.netflix.spinnaker.clouddriver.orchestration.AtomicOperations
 import org.apache.commons.io.IOUtils
+import org.openstack4j.api.networking.ext.LbaasV2Service
 import org.openstack4j.model.network.Subnet
-import org.openstack4j.model.network.ext.LbPool
+import org.openstack4j.model.network.ext.ListenerV2
+import org.openstack4j.model.network.ext.LoadBalancerV2
 
 /**
  * For now, we want to provide 'the standard' way of being able to configure an autoscaling group in much the same way
@@ -42,17 +46,9 @@ import org.openstack4j.model.network.ext.LbPool
  * but again it would need to honor the expected parameters.
  * We could use the freeform details field to store the template string.
  */
-class DeployOpenstackAtomicOperation implements AtomicOperation<DeploymentResult> {
+class DeployOpenstackAtomicOperation implements AtomicOperation<DeploymentResult>, PoolMemberAware {
 
   private final String BASE_PHASE = "DEPLOY"
-
-  //this is the file name of the heat template used to create the auto scaling group,
-  //and needs to be loaded into memory as a String
-  final String TEMPLATE_FILE = 'asg.yaml'
-
-  //this is the name of the subtemplate referenced by the template,
-  //and needs to be loaded into memory as a String
-  final String SUBTEMPLATE_FILE = 'asg_resource.yaml'
 
   DeployOpenstackAtomicOperationDescription description
 
@@ -65,7 +61,7 @@ class DeployOpenstackAtomicOperation implements AtomicOperation<DeploymentResult
   }
 
   /*
-   * curl -X POST -H "Content-Type: application/json" -d '[{
+   curl -X POST -H "Content-Type: application/json" -d '[{
     "createServerGroup": {
       "stack": "teststack",
       "application": "myapp",
@@ -76,7 +72,7 @@ class DeployOpenstackAtomicOperation implements AtomicOperation<DeploymentResult
         "minSize": 3,
         "desiredSize": 4,
         "subnetId": "77bb3aeb-c1e2-4ce5-8d8f-b8e9128af651",
-        "poolId": "87077f97-83e7-4ea1-9ca9-40dc691846db",
+        "loadBalancers": ["87077f97-83e7-4ea1-9ca9-40dc691846db"]
         "securityGroups": ["e56fa7eb-550d-42d4-8d3f-f658fbacd496"],
         "scaleup": {
           "cooldown": 60,
@@ -112,28 +108,38 @@ class DeployOpenstackAtomicOperation implements AtomicOperation<DeploymentResult
       def stackName = serverGroupNameResolver.resolveNextServerGroupName(description.application, description.stack, description.freeFormDetails, false)
       task.updateStatus BASE_PHASE, "Heat stack name chosen to be ${stackName}."
 
-      task.updateStatus BASE_PHASE, "Loading templates"
-      String template = IOUtils.toString(this.class.classLoader.getResourceAsStream(TEMPLATE_FILE))
-      String subtemplate = IOUtils.toString(this.class.classLoader.getResourceAsStream(SUBTEMPLATE_FILE))
-      task.updateStatus BASE_PHASE, "Finished loading templates"
-
-      task.updateStatus BASE_PHASE, "Getting load balancer details for pool id $description.serverGroupParameters.poolId"
-      LbPool pool = provider.getLoadBalancerPool(description.region, description.serverGroupParameters.poolId)
-      task.updateStatus BASE_PHASE, "Found load balancer details for pool id $description.serverGroupParameters.poolId with name $pool.name"
-
-      task.updateStatus BASE_PHASE, "Getting internal port used for load balancer $pool.name"
-      int port = provider.getInternalLoadBalancerPort(pool)
-      task.updateStatus BASE_PHASE, "Found internal port $port used for load balancer $pool.name"
+      //look up all load balancer listeners -> pool ids and internal ports
+      task.updateStatus BASE_PHASE, "Getting load balancer details for load balancers $description.serverGroupParameters.loadBalancers"
+      LbaasV2Service service = provider.getRegionClient(description.region).networking().lbaasV2() //TODO the calls directly to the client will move to the provider
+      List<MemberData> memberDataList = description.serverGroupParameters.loadBalancers.collectMany { loadBalancerId ->
+        task.updateStatus BASE_PHASE, "Looking up load balancer details for load balancer $loadBalancerId"
+        LoadBalancerV2 loadBalancer = service.loadbalancer().get(loadBalancerId)
+        task.updateStatus BASE_PHASE, "Found load balancer details for load balancer $loadBalancerId"
+        loadBalancer.listeners.collect { item ->
+          task.updateStatus BASE_PHASE, "Looking up load balancer listener details for listener $item.id"
+          ListenerV2 listener = service.listener().get(item.id)
+          String internalPort = listener.description.split('=')[1] //TODO abstract and strengthen this, for now format is 'internal_port=8000'
+          String poolId = listener.defaultPoolId
+          task.updateStatus BASE_PHASE, "Found load balancer listener details (poolId=$poolId, internalPort=$internalPort) for listener $item.id"
+          new MemberData(subnetId: description.serverGroupParameters.subnetId, internalPort: internalPort, poolId: poolId)
+        }
+      }
+      task.updateStatus BASE_PHASE, "Finished getting load balancer details for load balancers $description.serverGroupParameters.loadBalancers"
 
       String subnetId = description.serverGroupParameters.subnetId
       task.updateStatus BASE_PHASE, "Getting network id from subnet $subnetId"
       Subnet subnet = provider.getSubnet(description.region, subnetId)
       task.updateStatus BASE_PHASE, "Found network id $subnet.networkId from subnet $subnetId"
 
+      task.updateStatus BASE_PHASE, "Loading templates"
+      String template = IOUtils.toString(this.class.classLoader.getResourceAsStream(ServerGroupConstants.TEMPLATE_FILE))
+      String subtemplate = IOUtils.toString(this.class.classLoader.getResourceAsStream(ServerGroupConstants.SUBTEMPLATE_FILE))
+      String memberTemplate = buildPoolMemberTemplate(memberDataList)
+      task.updateStatus BASE_PHASE, "Finished loading templates"
+
       task.updateStatus BASE_PHASE, "Creating heat stack $stackName"
-      provider.deploy(description.region, stackName, template, [(SUBTEMPLATE_FILE): subtemplate], description.serverGroupParameters.identity {
+      provider.deploy(description.region, stackName, template, [(ServerGroupConstants.SUBTEMPLATE_FILE): subtemplate, (ServerGroupConstants.MEMBERTEMPLATE_FILE): memberTemplate], description.serverGroupParameters.identity {
         networkId = subnet.networkId
-        internalPort = port
         it
       }, description.disableRollback, description.timeoutMins)
       task.updateStatus BASE_PHASE, "Finished creating heat stack $stackName"
@@ -146,6 +152,6 @@ class DeployOpenstackAtomicOperation implements AtomicOperation<DeploymentResult
       throw new OpenstackOperationException(AtomicOperations.CREATE_SERVER_GROUP, e)
     }
     deploymentResult
-
   }
+
 }

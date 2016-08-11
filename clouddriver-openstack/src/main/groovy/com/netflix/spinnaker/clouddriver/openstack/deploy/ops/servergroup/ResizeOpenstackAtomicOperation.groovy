@@ -20,8 +20,8 @@ import com.netflix.spinnaker.clouddriver.data.task.Task
 import com.netflix.spinnaker.clouddriver.data.task.TaskRepository
 import com.netflix.spinnaker.clouddriver.openstack.client.OpenstackClientProvider
 import com.netflix.spinnaker.clouddriver.openstack.deploy.description.servergroup.ResizeOpenstackAtomicOperationDescription
-import com.netflix.spinnaker.clouddriver.openstack.deploy.exception.OpenstackOperationException
 import com.netflix.spinnaker.clouddriver.openstack.deploy.description.servergroup.ServerGroupParameters
+import com.netflix.spinnaker.clouddriver.openstack.deploy.exception.OpenstackOperationException
 import com.netflix.spinnaker.clouddriver.orchestration.AtomicOperation
 import com.netflix.spinnaker.clouddriver.orchestration.AtomicOperations
 import org.openstack4j.model.heat.Stack
@@ -29,12 +29,6 @@ import org.openstack4j.model.heat.Stack
 class ResizeOpenstackAtomicOperation implements AtomicOperation<Void> {
 
   private final String BASE_PHASE = "RESIZE"
-
-  //this is the name of the subtemplate referenced by the template,
-  //and needs to be loaded into memory as a String
-  final String SUBTEMPLATE_FILE = 'asg_resource.yaml'
-
-  final String SUBTEMPLATE_OUTPUT = 'asg_resource'
 
   ResizeOpenstackAtomicOperationDescription description
 
@@ -61,7 +55,8 @@ class ResizeOpenstackAtomicOperation implements AtomicOperation<Void> {
       Stack stack = provider.getStack(description.region, description.serverGroupName)
       //we need to store subtemplate in asg output from create, as it is required to do an update and there is no native way of
       //obtaining it from a stack
-      String subtemplate = stack.getOutputs().find { m -> m.get("output_key").equals(SUBTEMPLATE_OUTPUT) }.get("output_value")
+      String subtemplate = stack.getOutputs().find { m -> m.get("output_key") == ServerGroupConstants.SUBTEMPLATE_OUTPUT }.get("output_value")
+      String memberTemplate = stack.getOutputs().find { m -> m.get("output_key") == ServerGroupConstants.MEMBERTEMPLATE_OUTPUT }.get("output_value")
       task.updateStatus BASE_PHASE, "Successfully fetched server group $description.serverGroupName"
 
       //update the min and max parameters
@@ -80,7 +75,9 @@ class ResizeOpenstackAtomicOperation implements AtomicOperation<Void> {
 
       //update stack
       task.updateStatus BASE_PHASE, "Updating server group $stack.name with new min size $newParams.minSize and max size $newParams.maxSize"
-      provider.updateStack(description.region, stack.name, stack.id, template, [(SUBTEMPLATE_FILE): subtemplate], newParams)
+      println newParams.toString()
+      println newParams.toParamsMap().toString()
+      provider.updateStack(description.region, stack.name, stack.id, template, [(ServerGroupConstants.SUBTEMPLATE_FILE): subtemplate, (ServerGroupConstants.MEMBERTEMPLATE_FILE): memberTemplate], newParams)
       task.updateStatus BASE_PHASE, "Successfully updated server group $stack.name"
 
       task.updateStatus BASE_PHASE, "Successfully resized server group."

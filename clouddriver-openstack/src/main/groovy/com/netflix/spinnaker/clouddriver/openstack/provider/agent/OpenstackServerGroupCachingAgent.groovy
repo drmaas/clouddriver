@@ -246,7 +246,7 @@ class OpenstackServerGroupCachingAgent extends AbstractOpenstackCachingAgent imp
       result.put('minSize', stack.parameters?.get('min_size') ?: 0)
       result.put('maxSize', stack.parameters?.get('max_size') ?: 0)
       result.put('desiredSize', stack.parameters?.get('desired_size') ?: 0)
-      result.put('autoscalingType', ServerGroupParameters.AutoscalingType.fromMeter(stack.parameters.get('autoscaling_type')))
+      result.put('autoscalingType', ServerGroupParameters.AutoscalingType.fromMeter(stack.parameters?.get('autoscaling_type') ?: 'cpu_util'))
       ['up','down'].each {
         Map<String, Object> scaler = [cooldown  : stack.parameters.get("scale${it}_cooldown".toString()),
                                       period    : stack.parameters.get("scale${it}_period".toString()),
