@@ -17,20 +17,19 @@
 package com.netflix.spinnaker.clouddriver.openstack.model
 
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties
-import com.google.common.collect.Sets
 import com.netflix.spinnaker.clouddriver.model.LoadBalancer
 import com.netflix.spinnaker.clouddriver.model.LoadBalancerServerGroup
 import com.netflix.spinnaker.clouddriver.openstack.OpenstackCloudProvider
-import com.netflix.spinnaker.clouddriver.openstack.domain.HealthMonitor
-import com.netflix.spinnaker.clouddriver.openstack.domain.HealthMonitor.HealthMonitorType
 import com.netflix.spinnaker.clouddriver.openstack.domain.LoadBalancerResolver
 import groovy.transform.Canonical
-import org.openstack4j.model.network.ext.HealthMonitor as Openstack4jHealthMonitor
-import org.openstack4j.model.network.ext.LbPool
+import org.openstack4j.model.network.ext.HealthMonitorV2
+import org.openstack4j.model.network.ext.LbPoolV2
+import org.openstack4j.model.network.ext.ListenerV2
+import org.openstack4j.model.network.ext.LoadBalancerV2
 
 @Canonical
 @JsonIgnoreProperties(['portRegex','portPattern','createdRegex','createdPattern'])
-class OpenstackLoadBalancer implements LoadBalancer, Serializable, LoadBalancerResolver {
+class OpenstackLoadBalancer implements Serializable, LoadBalancerResolver {
 
   String type = OpenstackCloudProvider.ID
   String account
@@ -39,27 +38,22 @@ class OpenstackLoadBalancer implements LoadBalancer, Serializable, LoadBalancerR
   String name
   String description
   String status
-  String protocol
   String method
-  String ip
-  Integer externalPort
-  String subnetId
-  String subnetName
-  String networkId
-  String networkName
-  Set<HealthMonitor> healthChecks
-  Set<LoadBalancerServerGroup> serverGroups = Sets.newConcurrentHashSet()
+  Set<OpenstackLoadBalancerListener> listeners
+  HealthMonitorV2 healthMonitor
 
-  static OpenstackLoadBalancer from(LbPool pool, OpenstackVip vip, OpenstackSubnet subnet, OpenstackNetwork network, OpenstackFloatingIP ip,
-                                    Set<HealthMonitor> healthMonitors, String account, String region) {
-    if (!pool) {
+  static OpenstackLoadBalancer from(LoadBalancerV2 loadBalancer, Set<ListenerV2> listeners, Map<String, LbPoolV2> pools,
+                                    Map<String, HealthMonitorV2> healthMonitors, String account, String region) {
+    if (!loadBalancer) {
       throw new IllegalArgumentException("Pool must not be null.")
     }
-    new OpenstackLoadBalancer(account: account, region: region, id: pool.id, name: pool.name, description: pool.description,
-      status: pool.status, protocol: pool.protocol?.name(), method: pool.lbMethod?.name(),
-      ip: ip?.floatingIpAddress, externalPort: vip?.port, subnetId: subnet?.id, subnetName: subnet?.name,
-      networkId: network?.id, networkName: network?.name,
-      healthChecks: healthMonitors?.collect(this.&buildHealthMonitor)?.toSet())
+    Set<OpenstackLoadBalancerListener> openstackListeners = listeners.collect { listener ->
+      new OpenstackLoadBalancerListener(externalProtocol: listener.protocol, externalPort: listener.protocolPort,
+      internalProtocol: listener.protocol, internalPort: parseInternalPort(listener.description))
+    }
+    new OpenstackLoadBalancer(account: account, region: region, id: loadBalancer.id, name: loadBalancer.name,
+      description: loadBalancer.description, status: loadBalancer.operatingStatus,
+      method: pools.values().first().lbMethod.toString(), healthMonitor: healthMonitors.values().first())
   }
 
   Integer getInternalPort() {
@@ -70,14 +64,14 @@ class OpenstackLoadBalancer implements LoadBalancer, Serializable, LoadBalancerR
     parseCreatedTime(description)
   }
 
-  static HealthMonitor buildHealthMonitor(Openstack4jHealthMonitor monitor) {
-    new HealthMonitor(id: monitor.id,
-      type: HealthMonitorType.forValue(monitor.type.name()),
-      delay : monitor.delay,
-      timeout: monitor.timeout,
-      maxRetries: monitor.maxRetries,
-      httpMethod: monitor.httpMethod,
-      url: monitor.urlPath,
-      expectedCodes: monitor.expectedCodes?.split(',')?.toList()?.collect { Integer.parseInt(it) })
+  @Canonical
+  static class View extends OpenstackLoadBalancer implements LoadBalancer {
+    String ip = ""
+    String subnetId = ""
+    String subnetName = ""
+    String networkId = ""
+    String networkName = ""
+    Set<LoadBalancerServerGroup> serverGroups = [].toSet()
   }
+
 }

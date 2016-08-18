@@ -80,7 +80,7 @@ class OpenstackLoadBalancerProvider implements LoadBalancerProvider<OpenstackLoa
    * Convert load balancer cache data to a load balancer domain item.
    * @param cacheData
    * @return
-     */
+   */
   OpenstackLoadBalancer fromCacheData(CacheData cacheData) {
     OpenstackLoadBalancer loadBalancer = objectMapper.convertValue(cacheData.attributes, OpenstackLoadBalancer)
     Set<LoadBalancerServerGroup> serverGroups = cacheData.relationships[SERVER_GROUPS.ns]?.findResults { key ->

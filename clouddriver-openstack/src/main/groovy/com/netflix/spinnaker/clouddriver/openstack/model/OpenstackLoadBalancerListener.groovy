@@ -17,24 +17,13 @@
 package com.netflix.spinnaker.clouddriver.openstack.model
 
 import groovy.transform.Canonical
-import org.openstack4j.model.network.ext.Vip
 
 @Canonical
-class OpenstackVip {
-  String id
-  String name
-  String poolId
-  Integer port
-  String account
-  String region
+class OpenstackLoadBalancerListener {
 
-  /**
-   * Convert and Openstack vip into a domain specific object.
-   * @param vip
-   * @return
-   */
-  static OpenstackVip from(Vip vip, String account, String region) {
-    new OpenstackVip(id: vip.id, name: vip.name, poolId: vip.poolId, port: vip.protocolPort, account: account, region: region)
-  }
+  String externalProtocol
+  String externalPort
+  String internalProtocol
+  String internalPort
 
 }
