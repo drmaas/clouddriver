@@ -33,8 +33,10 @@ import org.openstack4j.model.network.ext.HealthMonitor
 import org.openstack4j.model.network.ext.HealthMonitorType
 import org.openstack4j.model.network.ext.LbMethod
 import org.openstack4j.model.network.ext.LbPool
+import org.openstack4j.model.network.ext.LbPoolV2
 import org.openstack4j.model.network.ext.ListenerV2
 import org.openstack4j.model.network.ext.LoadBalancerV2
+import org.openstack4j.model.network.ext.LoadBalancerV2StatusTree
 import org.openstack4j.model.network.ext.Member
 import org.openstack4j.model.network.ext.Protocol
 import org.openstack4j.model.network.ext.Vip
@@ -51,6 +53,13 @@ class OpenstackNetworkingV2Provider implements OpenstackNetworkingProvider, Open
   }
 
   @Override
+  LoadBalancerV2StatusTree getLoadBalancerStatusTree(final String region, final String loadBalancerId) {
+    handleRequest {
+      getRegionClient(region).networking().lbaasV2().loadbalancer().statusTree(loadBalancerId)
+    }
+  }
+
+  @Override
   LoadBalancerV2 getLoadBalancer(final String region, final String loadBalancerId) {
     handleRequest {
       getRegionClient(region).networking().lbaasV2().loadbalancer().get(loadBalancerId)
@@ -61,6 +70,13 @@ class OpenstackNetworkingV2Provider implements OpenstackNetworkingProvider, Open
   ListenerV2 getLoadBalancerListener(final String region, final String listenerId) {
     handleRequest {
       getRegionClient(region).networking().lbaasV2().listener().get(listenerId)
+    }
+  }
+
+  @Override
+  LbPoolV2 getLoadBalancerPoolV2(String region, String poolId) {
+    handleRequest {
+      getRegionClient(region).networking().lbaasV2().lbPool().get(poolId)
     }
   }
 

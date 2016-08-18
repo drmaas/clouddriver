@@ -51,4 +51,29 @@ trait StackPoolMemberAware {
     mapper.writeValueAsString(memberTemplate)
   }
 
+  /**
+   * TODO this will move once the lbaasv2 operation is done
+   * Generate key in the format externalProtocol:externalPort:internalProtocol:internalPort
+   * @param port
+   * @return
+   */
+  String getListenerKey(int externalPort, String externalProtocol, int internalPort, String internalProtocol) {
+    "${externalProtocol}:${externalPort}:${internalProtocol}:${internalPort}"
+  }
+
+  /**
+   * TODO this will move once the lbaasv2 operation is done
+   * Parse the listener attributes from the key.
+   * @param key
+   * @return
+   */
+  Map<String, String> parseListenerKey(String key) {
+    Map<String, String> result = [:]
+    String[] parts = key.split(':')
+    if (parts.length == 4) {
+      result << [externalProtocol: parts[0], externalPort: parts[1], internalProtocol: parts[2], internalPort: parts[3]]
+    }
+    result
+  }
+
 }

@@ -20,18 +20,25 @@ import com.netflix.spinnaker.clouddriver.data.task.Task
 import com.netflix.spinnaker.clouddriver.data.task.TaskRepository
 import com.netflix.spinnaker.clouddriver.openstack.client.OpenstackClientProvider
 import com.netflix.spinnaker.clouddriver.openstack.deploy.description.loadbalancer.DeleteOpenstackLoadBalancerDescription
+import com.netflix.spinnaker.clouddriver.openstack.deploy.description.servergroup.MemberData
+import com.netflix.spinnaker.clouddriver.openstack.deploy.description.servergroup.ServerGroupParameters
 import com.netflix.spinnaker.clouddriver.openstack.deploy.exception.OpenstackOperationException
 import com.netflix.spinnaker.clouddriver.openstack.deploy.exception.OpenstackProviderException
+import com.netflix.spinnaker.clouddriver.openstack.deploy.ops.StackPoolMemberAware
+import com.netflix.spinnaker.clouddriver.openstack.deploy.ops.servergroup.ServerGroupConstants
 import com.netflix.spinnaker.clouddriver.orchestration.AtomicOperation
 import com.netflix.spinnaker.clouddriver.orchestration.AtomicOperations
 import groovy.util.logging.Slf4j
-import org.openstack4j.model.network.ext.LbPool
+import org.openstack4j.model.network.ext.LbPoolV2
+import org.openstack4j.model.network.ext.ListenerV2
+import org.openstack4j.model.network.ext.LoadBalancerV2
+import org.openstack4j.model.network.ext.status.LoadBalancerV2Status
 
 /**
  * Removes an openstack load balancer.
  */
 @Slf4j
-class DeleteOpenstackLoadBalancerAtomicOperation implements AtomicOperation<Void> {
+class DeleteOpenstackLoadBalancerAtomicOperation implements AtomicOperation<Void>, StackPoolMemberAware {
 
   private final String BASE_PHASE = 'DELETE_LOAD_BALANCER'
   DeleteOpenstackLoadBalancerDescription description
@@ -52,36 +59,102 @@ class DeleteOpenstackLoadBalancerAtomicOperation implements AtomicOperation<Void
   Void operate(List priorOutputs) {
     String region = description.region
     String loadBalancerId = description.id
-
-    task.updateStatus BASE_PHASE, "Deleting load balancer ${loadBalancerId} in region ${region}..."
+    OpenstackClientProvider provider = description.credentials.provider
 
     try {
-      OpenstackClientProvider clientProvider = description.credentials.provider
+      task.updateStatus BASE_PHASE, "Deleting load balancer ${loadBalancerId} in region ${region}..."
 
-      LbPool lbPool = clientProvider.getLoadBalancerPool(region, loadBalancerId)
+      //step 1 - update stack(s) that reference load balancer
+      //TODO once tags are implemented in openstack4j, update the stack tags to remove the load balancer
+      task.updateStatus BASE_PHASE, "Updating server groups that reference load balancer $loadBalancerId..."
+      provider.listStacks(region).findAll { stack ->
+        stack.parameters.get('load_balancers')?.contains(loadBalancerId) ?: false
+      }.each { stack ->
+        //update parameters
+        ServerGroupParameters newParams = ServerGroupParameters.fromParamsMap(stack.parameters)
+        newParams.loadBalancers.remove(loadBalancerId)
 
-      if (lbPool) {
-        lbPool.healthMonitors?.each { monitorId ->
-          task.updateStatus BASE_PHASE, "Deleting health monitor ${monitorId} ..."
-          clientProvider.disassociateAndRemoveHealthMonitor(region, loadBalancerId, monitorId)
-          task.updateStatus BASE_PHASE, "Deleted health monitor ${monitorId}."
-        }
+        //get the current template from the stack
+        task.updateStatus BASE_PHASE, "Fetching current template for server group $stack.name..."
+        String template = provider.getHeatTemplate(description.region, stack.name, stack.id)
+        task.updateStatus BASE_PHASE, "Successfully fetched current template for server group $stack.name."
 
-        if (lbPool.vipId) {
-          //NOTE: Deleting a vip will disassociate it from assigned floating IP
-          task.updateStatus BASE_PHASE, "Deleting vip ${lbPool.vipId} ..."
-          clientProvider.deleteVip(region, lbPool.vipId)
-          task.updateStatus BASE_PHASE, "Deleted vip ${lbPool.vipId}."
-        }
+        //we need to store subtemplate in asg output from create, as it is required to do an update and there is no native way of
+        //obtaining it from a stack
+        task.updateStatus BASE_PHASE, "Fetching subtemplates for server group $stack.name..."
+        List<Map<String, Object>> outputs = stack.outputs
+        String subtemplate = outputs.find { m -> m.get("output_key") == ServerGroupConstants.SUBTEMPLATE_OUTPUT }.get("output_value")
+        //rebuild memberTemplate
+        String memberTemplate = buildPoolMemberTemplate(newParams.loadBalancers.collectMany { lbid ->
+          task.updateStatus BASE_PHASE, "Looking up load balancer details for load balancer $loadBalancerId..."
+          LoadBalancerV2 loadBalancer = provider.getLoadBalancer(description.region, loadBalancerId)
+          task.updateStatus BASE_PHASE, "Found load balancer details for load balancer $loadBalancerId."
+          loadBalancer.listeners.collect { item ->
+            task.updateStatus BASE_PHASE, "Looking up load balancer listener details for listener $item.id..."
+            ListenerV2 listener = provider.getLoadBalancerListener(description.region, item.id)
+            String internalPort = parseListenerKey(listener.description).internalPort
+            String poolId = listener.defaultPoolId
+            task.updateStatus BASE_PHASE, "Found load balancer listener details (poolId=$poolId, internalPort=$internalPort) for listener $item.id."
+            task.updateStatus BASE_PHASE, "Looking up load balancer pool details for pool $poolId..."
+            LbPoolV2 pool = provider.getLoadBalancerPoolV2(region, poolId)
+            //TODO need subnet id feature merged into openstack4j
+            new MemberData(subnetId: pool.subnetId, internalPort: internalPort, poolId: poolId)
+          }
+        })
+        task.updateStatus BASE_PHASE, "Fetched subtemplates for server group $stack.name."
 
-        //NOTE: Deleting a pool remove members
-        task.updateStatus BASE_PHASE, "Deleting load balancing pool ${loadBalancerId} ..."
-        clientProvider.deleteLoadBalancerPool(description.region, loadBalancerId)
-        task.updateStatus BASE_PHASE, "Deleted load balancing pool ${loadBalancerId}."
+        //update stack
+        task.updateStatus BASE_PHASE, "Updating server group $stack.name..."
+        provider.updateStack(description.region, stack.name, stack.id, template, [(ServerGroupConstants.SUBTEMPLATE_FILE): subtemplate, (ServerGroupConstants.MEMBERTEMPLATE_FILE): memberTemplate], newParams)
+        task.updateStatus BASE_PHASE, "Successfully updated server group $stack.name."
+        //TODO wait until all load balancers for this stack are in ACTIVE status
       }
-    } catch (OpenstackProviderException ope) {
-      task.updateStatus BASE_PHASE, "Failed deleting load balancer ${ope.message}."
-      throw new OpenstackOperationException(AtomicOperations.DELETE_LOAD_BALANCER, ope)
+      task.updateStatus BASE_PHASE, "Updated server groups that reference load balancer $loadBalancerId."
+
+      //step 2 - delete load balancer
+      task.updateStatus BASE_PHASE, "Fetching status tree..."
+      LoadBalancerV2Status loadBalancerStatus = provider.getLoadBalancerStatusTree(region, loadBalancerId)?.loadBalancerV2Status
+      task.updateStatus BASE_PHASE, "Fetched status tree."
+
+      if (loadBalancerStatus) {
+        //remove elements
+        loadBalancerStatus.listenerStatuses?.each { listenerStatus ->
+          listenerStatus.lbPoolV2Statuses?.each { poolStatus ->
+            //delete health
+            if (poolStatus.heathMonitorStatus) {
+              task.updateStatus BASE_PHASE, "Deleting health monitor $poolStatus.heathMonitorStatus.id for pool $poolStatus.id on listener $listenerStatus.id..."
+              provider.client.networking().lbaasV2().healthMonitor().delete(poolStatus.heathMonitorStatus.id) //TODO
+              task.updateStatus BASE_PHASE, "Deleted health monitor $poolStatus.heathMonitorStatus.id for pool $poolStatus.id on listener $listenerStatus.id."
+              //TODO wait until load balancer is in ACTIVE status before proceeding
+            }
+            //delete members
+            poolStatus.memberStatuses.each { memberStatus ->
+              task.updateStatus BASE_PHASE, "Deleting pool member $memberStatus.id from pool $poolStatus.id..."
+              provider.client.networking().lbaasV2().lbPool().deleteMember(poolStatus.id, memberStatus.id) //TODO
+              task.updateStatus BASE_PHASE, "Deleted pool member $memberStatus.id from pool $poolStatus.id."
+              //TODO wait until load balancer is in ACTIVE status before proceeding
+            }
+
+            //delete pool
+            task.updateStatus BASE_PHASE, "Deleting pool $poolStatus.id on listener $listenerStatus.id..."
+            provider.client.networking().lbaasV2().lbPool().delete(poolStatus.id)
+            task.updateStatus BASE_PHASE, "Deleted pool $poolStatus.id on listener $listenerStatus.id."
+            //TODO wait until load balancer is in ACTIVE status before proceeding
+          }
+          //delete listener
+          task.updateStatus BASE_PHASE, "Deleting listener $listenerStatus.id..."
+          provider.client.networking().lbaasV2().listener().delete(listenerStatus.id)
+          task.updateStatus BASE_PHASE, "Deleted listener $listenerStatus.id."
+          //TODO wait until load balancer is in ACTIVE status before proceeding
+        }
+        //delete load balancer
+        task.updateStatus BASE_PHASE, "Deleting load balancer..."
+        provider.client.networking().lbaasV2().loadbalancer().delete(loadBalancerStatus.id)
+        task.updateStatus BASE_PHASE, "Deleted load balancer."
+      }
+    } catch (OpenstackProviderException e) {
+      task.updateStatus BASE_PHASE, "Failed deleting load balancer ${e.message}."
+      throw new OpenstackOperationException(AtomicOperations.DELETE_LOAD_BALANCER, e)
     }
 
     task.updateStatus BASE_PHASE, "Finished deleting load balancer ${loadBalancerId}."
