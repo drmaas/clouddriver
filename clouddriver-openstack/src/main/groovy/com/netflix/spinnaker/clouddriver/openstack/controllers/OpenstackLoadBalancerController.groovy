@@ -47,7 +47,7 @@ class OpenstackLoadBalancerController {
   }
 
   @RequestMapping(value = "/{account}/{region}/{name:.+}", method = RequestMethod.GET)
-  Set<OpenstackLoadBalancer> getDetailsInAccountAndRegionByName(@PathVariable String account,
+  Set<OpenstackLoadBalancer.View> getDetailsInAccountAndRegionByName(@PathVariable String account,
                                                                 @PathVariable String region,
                                                                 @PathVariable String name) {
     provider.getLoadBalancers(account, region, name)

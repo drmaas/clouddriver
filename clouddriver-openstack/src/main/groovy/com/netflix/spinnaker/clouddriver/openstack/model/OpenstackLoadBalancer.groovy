@@ -42,8 +42,8 @@ class OpenstackLoadBalancer implements Serializable, LoadBalancerResolver {
   Set<OpenstackLoadBalancerListener> listeners
   HealthMonitorV2 healthMonitor
 
-  static OpenstackLoadBalancer from(LoadBalancerV2 loadBalancer, Set<ListenerV2> listeners, Map<String, LbPoolV2> pools,
-                                    Map<String, HealthMonitorV2> healthMonitors, String account, String region) {
+  static OpenstackLoadBalancer from(LoadBalancerV2 loadBalancer, Set<ListenerV2> listeners, LbPoolV2 pool,
+                                    HealthMonitorV2 healthMonitor, String account, String region) {
     if (!loadBalancer) {
       throw new IllegalArgumentException("Pool must not be null.")
     }
@@ -53,7 +53,7 @@ class OpenstackLoadBalancer implements Serializable, LoadBalancerResolver {
     }
     new OpenstackLoadBalancer(account: account, region: region, id: loadBalancer.id, name: loadBalancer.name,
       description: loadBalancer.description, status: loadBalancer.operatingStatus,
-      method: pools.values().first().lbMethod.toString(), healthMonitor: healthMonitors.values().first())
+      method: pool.lbMethod.toString(), listeners: openstackListeners, healthMonitor: healthMonitor)
   }
 
   Integer getInternalPort() {
@@ -65,7 +65,9 @@ class OpenstackLoadBalancer implements Serializable, LoadBalancerResolver {
   }
 
   @Canonical
-  static class View extends OpenstackLoadBalancer implements LoadBalancer {
+  static class View implements LoadBalancer {
+    @Delegate
+    OpenstackLoadBalancer loadBalancer
     String ip = ""
     String subnetId = ""
     String subnetName = ""

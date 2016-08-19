@@ -30,22 +30,16 @@ import com.netflix.spinnaker.clouddriver.openstack.cache.CacheResultBuilder
 import com.netflix.spinnaker.clouddriver.openstack.cache.Keys
 import com.netflix.spinnaker.clouddriver.openstack.cache.UnresolvableKeyException
 import com.netflix.spinnaker.clouddriver.openstack.deploy.exception.OpenstackProviderException
-import com.netflix.spinnaker.clouddriver.openstack.model.OpenstackFloatingIP
 import com.netflix.spinnaker.clouddriver.openstack.model.OpenstackLoadBalancer
-import com.netflix.spinnaker.clouddriver.openstack.model.OpenstackNetwork
-import com.netflix.spinnaker.clouddriver.openstack.model.OpenstackPort
-import com.netflix.spinnaker.clouddriver.openstack.model.OpenstackSubnet
-import com.netflix.spinnaker.clouddriver.openstack.model.OpenstackVip
 import com.netflix.spinnaker.clouddriver.openstack.security.OpenstackNamedAccountCredentials
 import groovy.util.logging.Slf4j
-import org.openstack4j.model.network.NetFloatingIP
-import org.openstack4j.model.network.ext.HealthMonitor
 import org.openstack4j.model.network.ext.HealthMonitorV2
-import org.openstack4j.model.network.ext.LbPool
 import org.openstack4j.model.network.ext.LbPoolV2
 import org.openstack4j.model.network.ext.ListenerV2
 import org.openstack4j.model.network.ext.LoadBalancerV2
-import org.openstack4j.model.network.ext.Vip
+
+import java.util.concurrent.CompletableFuture
+import java.util.concurrent.Future
 
 import static com.netflix.spinnaker.cats.agent.AgentDataType.Authority.AUTHORITATIVE
 import static com.netflix.spinnaker.clouddriver.cache.OnDemandAgent.OnDemandType.LoadBalancer
@@ -53,9 +47,7 @@ import static com.netflix.spinnaker.clouddriver.openstack.OpenstackCloudProvider
 import static com.netflix.spinnaker.clouddriver.openstack.cache.Keys.Namespace.FLOATING_IPS
 import static com.netflix.spinnaker.clouddriver.openstack.cache.Keys.Namespace.LOAD_BALANCERS
 import static com.netflix.spinnaker.clouddriver.openstack.cache.Keys.Namespace.NETWORKS
-import static com.netflix.spinnaker.clouddriver.openstack.cache.Keys.Namespace.PORTS
 import static com.netflix.spinnaker.clouddriver.openstack.cache.Keys.Namespace.SUBNETS
-import static com.netflix.spinnaker.clouddriver.openstack.cache.Keys.Namespace.VIPS
 import static com.netflix.spinnaker.clouddriver.openstack.provider.OpenstackInfrastructureProvider.ATTRIBUTES
 
 @Slf4j
@@ -87,63 +79,57 @@ class OpenstackLoadBalancerCachingAgent extends AbstractOpenstackCachingAgent im
   CacheResult loadData(ProviderCache providerCache) {
     log.info("Describing items in ${agentType}")
 
-    List<LoadBalancerV2> loadBalancers = clientProvider.getLoadBalancers(region)
+    //Get all data in parallel to cut down on processing time
+    Future<Set<? extends LoadBalancerV2>> loadBalancers = CompletableFuture.supplyAsync {
+      clientProvider.getLoadBalancers(region).toSet()
+    }
+    Future<Set<? extends ListenerV2>> listeners = CompletableFuture.supplyAsync {
+      clientProvider.client.useRegion(region).networking().lbaasV2().listener().list().toSet() //TODO
+    }
+    Future<Set<? extends LbPoolV2>> pools = CompletableFuture.supplyAsync {
+      clientProvider.client.useRegion(region).networking().lbaasV2().lbPool().list().toSet() //TODO
+    }
+    Future<Set<? extends HealthMonitorV2>> healthMonitors = CompletableFuture.supplyAsync {
+      clientProvider.client.useRegion(region).networking().lbaasV2().healthMonitor().list().toSet() //TODO
+    }
+    CompletableFuture.allOf(loadBalancers, listeners, pools, healthMonitors).join()
 
-    List<String> loadBalancerKeys = loadBalancers.collect { Keys.getLoadBalancerKey(it.name, it.id, accountName, region) }
+    List<String> loadBalancerKeys = loadBalancers.get().collect { Keys.getLoadBalancerKey(it.name, it.id, accountName, region) }
 
     buildLoadDataCache(providerCache, loadBalancerKeys) { CacheResultBuilder cacheResultBuilder ->
-      buildCacheResult(providerCache, loadBalancers, cacheResultBuilder)
+      buildCacheResult(providerCache, loadBalancers.get(), listeners.get(), pools.get(), healthMonitors.get(), cacheResultBuilder)
     }
   }
 
-  CacheResult buildCacheResult(ProviderCache providerCache, List<LoadBalancerV2> loadBalancers, CacheResultBuilder cacheResultBuilder) {
-    loadBalancers?.collect { loadBalancer ->
+  CacheResult buildCacheResult(ProviderCache providerCache,
+                               Set<LoadBalancerV2> loadBalancers,
+                               Set<ListenerV2> listeners,
+                               Set<LbPoolV2> pools,
+                               Set<HealthMonitorV2> healthMonitors,
+                               CacheResultBuilder cacheResultBuilder) {
+    loadBalancers?.each { loadBalancer ->
       String loadBalancerKey = Keys.getLoadBalancerKey(loadBalancer.name, loadBalancer.id, accountName, region)
-
       if (shouldUseOnDemandData(cacheResultBuilder, loadBalancerKey)) {
         moveOnDemandDataToNamespace(objectMapper, typeReference, cacheResultBuilder, loadBalancerKey)
       } else {
-        //listeners, pools, and health monitors get looked up
-        Set<ListenerV2> listeners = [].toSet()
-        Map<String, LbPoolV2> pools = [:]
-        Map<String, HealthMonitorV2> healthMonitors = [:]
-        loadBalancer.listeners.each { listenerListItem ->
-          ListenerV2 listener = clientProvider.getLoadBalancerListener(region, listenerListItem.id)
-          listeners << listener
-          LbPoolV2 pool = clientProvider.client.networking().lbaasV2().lbPool().get(listener.defaultPoolId) //TODO
-          pools << [(listener.id): pool]
-          HealthMonitorV2 healthMonitor = clientProvider.client.networking().lbaasV2().healthMonitor().get(pool.healthMonitorId) //TODO
-          healthMonitors << [(pool.id): healthMonitor]
-        }
+        Set<ListenerV2> resultlisteners = listeners.findAll { listener -> listener.loadBalancers[0].id == loadBalancer.id }.toSet()
+        LbPoolV2 pool = resultlisteners.collect { listener -> pools.find { pool -> pool.id == listener.defaultPoolId } }.first()
+        HealthMonitorV2 healthMonitor = healthMonitors.find { healthMonitor -> healthMonitor.id == pool.healthMonitorId }
+
+        //create load balancer. Server group relationships are not cached here as they are cached in the server group caching agent.
+        OpenstackLoadBalancer openstackLoadBalancer = OpenstackLoadBalancer.from(loadBalancer, resultlisteners, pool, healthMonitor, accountName, region)
 
         //ips cached
         Collection<String> ipFilters = providerCache.filterIdentifiers(FLOATING_IPS.ns, Keys.getFloatingIPKey('*', accountName, region))
         Collection<CacheData> ipsData = providerCache.getAll(FLOATING_IPS.ns, ipFilters, RelationshipCacheFilter.none())
         CacheData ipCacheData = ipsData.find { i -> i.attributes?.fixedIpAddress == loadBalancer.vipAddress }
         String floatingIpKey = Keys.getFloatingIPKey(ipCacheData.id, accountName, region)
-        //TODO view to view
-//        Map<String, Object> ipAttributes = ipCacheData?.attributes
-//        OpenstackFloatingIP ip = objectMapper.convertValue(ipAttributes, OpenstackFloatingIP)
 
         //subnets cached
-        //TODO need to get subnet from pool after new version of openstack4j is published
-        String subnetKey = Keys.getSubnetKey(pools.entrySet().first().value.subnetId, accountName, region)
-        //TODO move to view. All pools will share the same subnet???
-//        Map<String, Object> subnetMap = providerCache.get(SUBNETS.ns, Keys.getSubnetKey(loadBalancer.subnetId, accountName, region))?.attributes
-//        OpenstackSubnet subnet = subnetMap ? objectMapper.convertValue(subnetMap, OpenstackSubnet) : null
+        String subnetKey = Keys.getSubnetKey(loadBalancer.vipSubnetId, accountName, region)
 
         //networks cached
-        String networkKey = Keys.getNetworkKey(ip.networkId, accountName, region)
-        //TODO move to view
-//        OpenstackNetwork network = null
-//        if (ip) {
-//          Map<String, Object> networkMap = providerCache.get(NETWORKS.ns, Keys.getNetworkKey(ip.networkId, accountName, region))?.attributes
-//          network = networkMap ? objectMapper.convertValue(networkMap, OpenstackNetwork) : null
-//        }
-
-        //create load balancer. Server group relationships are not cached here as they are cached in the server group caching agent.
-        OpenstackLoadBalancer openstackLoadBalancer = OpenstackLoadBalancer.from(loadBalancer, listeners, pools,
-          healthMonitors, accountName, region)
+        String networkKey = Keys.getNetworkKey(ipCacheData.attributes.networkId.toString(), accountName, region)
 
         cacheResultBuilder.namespace(LOAD_BALANCERS.ns).keep(loadBalancerKey).with {
           attributes = objectMapper.convertValue(openstackLoadBalancer, ATTRIBUTES)

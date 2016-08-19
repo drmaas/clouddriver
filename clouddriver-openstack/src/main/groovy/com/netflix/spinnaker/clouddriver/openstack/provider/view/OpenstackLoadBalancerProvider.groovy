@@ -26,16 +26,22 @@ import com.netflix.spinnaker.clouddriver.model.LoadBalancerProvider
 import com.netflix.spinnaker.clouddriver.model.LoadBalancerServerGroup
 import com.netflix.spinnaker.clouddriver.model.ServerGroup
 import com.netflix.spinnaker.clouddriver.openstack.cache.Keys
+import com.netflix.spinnaker.clouddriver.openstack.model.OpenstackFloatingIP
 import com.netflix.spinnaker.clouddriver.openstack.model.OpenstackInstance
 import com.netflix.spinnaker.clouddriver.openstack.model.OpenstackLoadBalancer
+import com.netflix.spinnaker.clouddriver.openstack.model.OpenstackNetwork
+import com.netflix.spinnaker.clouddriver.openstack.model.OpenstackSubnet
 import org.springframework.beans.factory.annotation.Autowired
 import org.springframework.stereotype.Component
 
+import static com.netflix.spinnaker.clouddriver.openstack.cache.Keys.Namespace.FLOATING_IPS
 import static com.netflix.spinnaker.clouddriver.openstack.cache.Keys.Namespace.LOAD_BALANCERS
+import static com.netflix.spinnaker.clouddriver.openstack.cache.Keys.Namespace.NETWORKS
 import static com.netflix.spinnaker.clouddriver.openstack.cache.Keys.Namespace.SERVER_GROUPS
+import static com.netflix.spinnaker.clouddriver.openstack.cache.Keys.Namespace.SUBNETS
 
 @Component
-class OpenstackLoadBalancerProvider implements LoadBalancerProvider<OpenstackLoadBalancer> {
+class OpenstackLoadBalancerProvider implements LoadBalancerProvider<OpenstackLoadBalancer.View> {
 
   final Cache cacheView
   final ObjectMapper objectMapper
@@ -54,7 +60,7 @@ class OpenstackLoadBalancerProvider implements LoadBalancerProvider<OpenstackLoa
    * @return
    */
   @Override
-  Set<OpenstackLoadBalancer> getApplicationLoadBalancers(String application) {
+  Set<OpenstackLoadBalancer.View> getApplicationLoadBalancers(String application) {
     //get all load balancers tied to this app (via their name)
     Collection<String> identifiers = cacheView.filterIdentifiers(LOAD_BALANCERS.ns, Keys.getLoadBalancerKey(application, '*', '*', '*'))
     identifiers.addAll(cacheView.filterIdentifiers(LOAD_BALANCERS.ns, Keys.getLoadBalancerKey("$application-*", '*', '*', '*')))
@@ -69,7 +75,7 @@ class OpenstackLoadBalancerProvider implements LoadBalancerProvider<OpenstackLoa
    * @param id
    * @return
    */
-  Set<OpenstackLoadBalancer> getLoadBalancers(String account, String region, String id) {
+  Set<OpenstackLoadBalancer.View> getLoadBalancers(String account, String region, String id) {
     String pattern = Keys.getLoadBalancerKey('*', id, account, region)
     Collection<String> identifiers = cacheView.filterIdentifiers(LOAD_BALANCERS.ns, pattern)
     Collection<CacheData> data = cacheView.getAll(LOAD_BALANCERS.ns, identifiers, RelationshipCacheFilter.include(SERVER_GROUPS.ns))
@@ -81,7 +87,13 @@ class OpenstackLoadBalancerProvider implements LoadBalancerProvider<OpenstackLoa
    * @param cacheData
    * @return
    */
-  OpenstackLoadBalancer fromCacheData(CacheData cacheData) {
+  OpenstackLoadBalancer.View fromCacheData(CacheData cacheData) {
+    //get relationship data
+    OpenstackFloatingIP ip = getRelationshipData(cacheData, FLOATING_IPS.ns, OpenstackFloatingIP)
+    OpenstackNetwork network = getRelationshipData(cacheData, NETWORKS.ns, OpenstackNetwork)
+    OpenstackSubnet subnet = getRelationshipData(cacheData, SUBNETS.ns, OpenstackSubnet)
+
+    //build load balancer
     OpenstackLoadBalancer loadBalancer = objectMapper.convertValue(cacheData.attributes, OpenstackLoadBalancer)
     Set<LoadBalancerServerGroup> serverGroups = cacheData.relationships[SERVER_GROUPS.ns]?.findResults { key ->
       LoadBalancerServerGroup loadBalancerServerGroup = null
@@ -94,8 +106,13 @@ class OpenstackLoadBalancerProvider implements LoadBalancerProvider<OpenstackLoa
       }
       loadBalancerServerGroup
     }?.toSet()
-    loadBalancer.serverGroups = serverGroups ?: Sets.newHashSet()
-    loadBalancer
+    new OpenstackLoadBalancer.View(loadBalancer: loadBalancer, ip: ip.floatingIpAddress, subnetId: subnet.id, subnetName: subnet.name,
+      networkId: network.id, networkName: network.name, serverGroups: serverGroups ?: [].toSet())
+  }
+
+  private <T> T getRelationshipData(CacheData parent, String type, Class<T> clazz) {
+    CacheData cacheData = cacheView.getAll(type, parent.relationships[type])?.first()
+    objectMapper.convertValue(cacheData?.attributes, clazz)
   }
 
 }
