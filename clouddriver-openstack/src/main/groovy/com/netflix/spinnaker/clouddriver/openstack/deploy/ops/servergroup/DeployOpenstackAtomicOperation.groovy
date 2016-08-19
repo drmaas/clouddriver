@@ -124,7 +124,7 @@ class DeployOpenstackAtomicOperation implements AtomicOperation<DeploymentResult
           String internalPort = parseListenerKey(listener.description).internalPort
           String poolId = listener.defaultPoolId
           task.updateStatus BASE_PHASE, "Found load balancer listener details (poolId=$poolId, internalPort=$internalPort) for listener $item.id."
-          new MemberData(subnetId: description.serverGroupParameters.subnetId, internalPort: internalPort, poolId: poolId)
+          new MemberData(subnetId: description.serverGroupParameters.subnetId, externalPort: listener.protocolPort.toString(), internalPort: internalPort, poolId: poolId)
         }
       }
       task.updateStatus BASE_PHASE, "Finished getting load balancer details for load balancers $description.serverGroupParameters.loadBalancers."
@@ -150,7 +150,7 @@ class DeployOpenstackAtomicOperation implements AtomicOperation<DeploymentResult
       provider.deploy(description.region, stackName, template, subtemplates, description.serverGroupParameters.identity {
         networkId = subnet.networkId
         it
-      }, description.disableRollback, description.timeoutMins)
+      }, description.disableRollback, description.timeoutMins, description.serverGroupParameters.loadBalancers)
       task.updateStatus BASE_PHASE, "Finished creating heat stack $stackName."
 
       task.updateStatus BASE_PHASE, "Successfully created server group."
