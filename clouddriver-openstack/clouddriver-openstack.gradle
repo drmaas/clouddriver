@@ -19,8 +19,8 @@ repositories {
 }
 
 ext {
-  openstack4jCoreVersion = '3.0.2-20160822.115544-6'
-  openstack4jJerseyVersion = '3.0.2-20160822.115557-6'
+  openstack4jCoreVersion = '3.0.2'
+  openstack4jJerseyVersion = '3.0.2'
   commonsNetVersion = '3.5'
   commonsIOVersion = '1.3.2'
   jacksonVersion = '2.7.3'
