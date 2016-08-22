@@ -89,9 +89,7 @@ class OpenstackLoadBalancerProvider implements LoadBalancerProvider<OpenstackLoa
    */
   OpenstackLoadBalancer.View fromCacheData(CacheData cacheData) {
     //get relationship data
-    println cacheData.relationships.toString()
     OpenstackFloatingIP ip = getRelationshipData(cacheData, FLOATING_IPS.ns, OpenstackFloatingIP)
-    println ip.toString()
     OpenstackNetwork network = getRelationshipData(cacheData, NETWORKS.ns, OpenstackNetwork)
     OpenstackSubnet subnet = getRelationshipData(cacheData, SUBNETS.ns, OpenstackSubnet)
 
@@ -108,11 +106,13 @@ class OpenstackLoadBalancerProvider implements LoadBalancerProvider<OpenstackLoa
       }
       loadBalancerServerGroup
     }?.toSet()
-    new OpenstackLoadBalancer.View(account: loadBalancer.account, region: loadBalancer.region, id: loadBalancer.id, name: loadBalancer.name,
+    OpenstackLoadBalancer.View view = new OpenstackLoadBalancer.View(account: loadBalancer.account, region: loadBalancer.region, id: loadBalancer.id, name: loadBalancer.name,
       description: loadBalancer.description, status: loadBalancer.status, method: loadBalancer.status,
       listeners: loadBalancer.listeners, healthMonitor: loadBalancer.healthMonitor, ip: ip?.floatingIpAddress,
       subnetId: subnet?.id, subnetName: subnet?.name,
       networkId: network?.id, networkName: network?.name, serverGroups: serverGroups ?: [].toSet())
+    println "4 " + view.toString()
+    view
   }
 
   private <T> T getRelationshipData(CacheData parent, String type, Class<T> clazz) {

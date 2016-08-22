@@ -42,8 +42,9 @@ class OpenstackLoadBalancerController {
   @RequestMapping(method = RequestMethod.GET)
   Set<OpenstackLoadBalancerSummary> list() {
     provider.getLoadBalancers('*', '*', '*').collect { lb ->
+      println lb.toString()
       new OpenstackLoadBalancerSummary(account: lb.account, region: lb.region, id: lb.id, name: lb.name)
-    }.sort { it.name }
+    }.sort { it.name }.toSet()
   }
 
   @RequestMapping(value = "/{account}/{region}/{name:.+}", method = RequestMethod.GET)

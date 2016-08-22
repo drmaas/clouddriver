@@ -22,14 +22,16 @@ import com.netflix.spinnaker.clouddriver.model.LoadBalancerServerGroup
 import com.netflix.spinnaker.clouddriver.openstack.OpenstackCloudProvider
 import com.netflix.spinnaker.clouddriver.openstack.domain.LoadBalancerResolver
 import groovy.transform.Canonical
+import groovy.transform.EqualsAndHashCode
+import groovy.transform.ToString
 import org.openstack4j.model.network.ext.HealthMonitorV2
 import org.openstack4j.model.network.ext.LbPoolV2
 import org.openstack4j.model.network.ext.ListenerV2
 import org.openstack4j.model.network.ext.LoadBalancerV2
 
 @Canonical
-@JsonIgnoreProperties(['portRegex','portPattern','createdRegex','createdPattern'])
-class OpenstackLoadBalancer implements Serializable, LoadBalancerResolver {
+@JsonIgnoreProperties(['createdRegex','createdPattern'])
+class OpenstackLoadBalancer implements LoadBalancerResolver {
 
   String type = OpenstackCloudProvider.ID
   String account
@@ -48,9 +50,9 @@ class OpenstackLoadBalancer implements Serializable, LoadBalancerResolver {
       throw new IllegalArgumentException("Load balancer must not be null.")
     }
     Set<OpenstackLoadBalancerListener> openstackListeners = listeners?.collect { listener ->
-      String internalPort = parseListenerKey(listener.description)['internalPort']
-      new OpenstackLoadBalancerListener(externalProtocol: listener.protocol.toString(), externalPort: listener.protocolPort.toString(),
-        internalProtocol: listener.protocol.toString(), internalPort: internalPort)
+      new OpenstackLoadBalancerListener(externalProtocol: listener.protocol.toString(),
+        externalPort: listener.protocolPort.toString(),
+        description: listener.description)
     }?.toSet() ?: [].toSet()
     OpenstackHealthMonitor openstackHealthMonitor = healthMonitor ? new OpenstackHealthMonitor(id: healthMonitor.id,
       adminStateUp: healthMonitor.adminStateUp, delay: healthMonitor.delay, maxRetries: healthMonitor.maxRetries,
@@ -65,11 +67,20 @@ class OpenstackLoadBalancer implements Serializable, LoadBalancerResolver {
   }
 
   @Canonical
-  static class OpenstackLoadBalancerListener {
+  @JsonIgnoreProperties(['createdRegex','createdPattern'])
+  static class OpenstackLoadBalancerListener implements LoadBalancerResolver {
+    String description
     String externalProtocol
     String externalPort
     String internalProtocol
-    String internalPort
+
+    String getInternalProtocol() {
+      parseListenerKey(description)?.get('internalProtocol')
+    }
+
+    String getInternalPort() {
+      parseListenerKey(description)?.get('internalPort')
+    }
   }
 
   @Canonical
@@ -83,7 +94,7 @@ class OpenstackLoadBalancer implements Serializable, LoadBalancerResolver {
   }
 
   @Canonical
-  @JsonIgnoreProperties(['portRegex','portPattern','createdRegex','createdPattern'])
+  @JsonIgnoreProperties(['createdRegex','createdPattern'])
   static class View extends OpenstackLoadBalancer implements LoadBalancer {
     String ip = ""
     String subnetId = ""
@@ -91,16 +102,16 @@ class OpenstackLoadBalancer implements Serializable, LoadBalancerResolver {
     String networkId = ""
     String networkName = ""
     Set<LoadBalancerServerGroup> serverGroups = [].toSet()
-  }
 
-  //TODO replace once lbaas upsert op is in place
-  static Map<String, String> parseListenerKey(String key) {
-    Map<String, String> result = [:]
-    String[] parts = key.split(':')
-    if (parts.length == 4) {
-      result << [externalProtocol: parts[0], externalPort: parts[1], internalProtocol: parts[2], internalPort: parts[3]]
+    //oh groovy asts are fun - they bring insanity for everyone
+    //we need this for creating sets
+    @Override
+    boolean equals(Object other) {
+      View view = (View)other
+      ip == view.ip && subnetId == view.subnetId && subnetName == view.subnetName &&
+        networkId == view.networkId && networkName == view.networkName && super.equals((OpenstackLoadBalancer)view)
     }
-    result
+
   }
 
 }

@@ -29,7 +29,6 @@ import com.netflix.spinnaker.clouddriver.cache.OnDemandMetricsSupport
 import com.netflix.spinnaker.clouddriver.openstack.cache.CacheResultBuilder
 import com.netflix.spinnaker.clouddriver.openstack.cache.Keys
 import com.netflix.spinnaker.clouddriver.openstack.cache.UnresolvableKeyException
-import com.netflix.spinnaker.clouddriver.openstack.deploy.exception.OpenstackProviderException
 import com.netflix.spinnaker.clouddriver.openstack.model.OpenstackLoadBalancer
 import com.netflix.spinnaker.clouddriver.openstack.security.OpenstackNamedAccountCredentials
 import groovy.util.logging.Slf4j
@@ -81,16 +80,16 @@ class OpenstackLoadBalancerCachingAgent extends AbstractOpenstackCachingAgent im
 
     //Get all data in parallel to cut down on processing time
     Future<Set<? extends LoadBalancerV2>> loadBalancers = CompletableFuture.supplyAsync {
-      clientProvider.getLoadBalancers(region).toSet()
+      clientProvider.getLoadBalancers(region)?.toSet()
     }
     Future<Set<? extends ListenerV2>> listeners = CompletableFuture.supplyAsync {
-      clientProvider.client.useRegion(region).networking().lbaasV2().listener().list().toSet() //TODO
+      clientProvider.getListeners(region)?.toSet()
     }
     Future<Set<? extends LbPoolV2>> pools = CompletableFuture.supplyAsync {
-      clientProvider.client.useRegion(region).networking().lbaasV2().lbPool().list().toSet() //TODO
+      clientProvider.getPools(region)?.toSet()
     }
     Future<Set<? extends HealthMonitorV2>> healthMonitors = CompletableFuture.supplyAsync {
-      clientProvider.client.useRegion(region).networking().lbaasV2().healthMonitor().list().toSet() //TODO
+      clientProvider.getHealthMonitors(region)?.toSet()
     }
     CompletableFuture.allOf(loadBalancers, listeners, pools, healthMonitors).join()
 
@@ -170,26 +169,36 @@ class OpenstackLoadBalancerCachingAgent extends AbstractOpenstackCachingAgent im
       String loadBalancerName = data.loadBalancerName.toString()
 
       LoadBalancerV2 loadBalancer = metricsSupport.readData {
-        LoadBalancerV2 lbResult = null
-        try {
-          LoadBalancerV2 realtimeLoadBalancer = clientProvider.getLoadBalancerByName(region, loadBalancerName)
-          lbResult = realtimeLoadBalancer ?: null
-        } catch (OpenstackProviderException e) {
-          //Do nothing ... Exception is thrown if a pool isn't found
-        }
-        lbResult
+        clientProvider.getLoadBalancerByName(region, loadBalancerName)
       }
 
-      List<LoadBalancerV2> loadBalancers = []
+      Set<LoadBalancerV2> loadBalancers = [].toSet()
+      Set<ListenerV2> listeners = [].toSet()
+      Set<LbPoolV2> pools = [].toSet()
+      Set<HealthMonitorV2> healthMonitors = [].toSet()
       String loadBalancerKey = Keys.getLoadBalancerKey(loadBalancerName, '*', accountName, region)
 
       if (loadBalancer) {
-        loadBalancers = [loadBalancer]
+        loadBalancers << loadBalancer
+        loadBalancer.listeners.each { listenerItem ->
+          ListenerV2 listener = clientProvider.getListener(region, listenerItem.id)
+          if (listener) {
+            LbPoolV2 pool = clientProvider.getPool(region, listener.defaultPoolId)
+            if (pool) {
+              HealthMonitorV2 healthMonitor = clientProvider.getMonitor(region, pool.healthMonitorId)
+              if (healthMonitor) {
+                healthMonitors << healthMonitor
+              }
+              pools << pool
+            }
+            listeners << listener
+          }
+        }
         loadBalancerKey = Keys.getLoadBalancerKey(loadBalancerName, loadBalancer.id, accountName, region)
       }
 
       CacheResult cacheResult = metricsSupport.transformData {
-        buildCacheResult(providerCache, loadBalancers, new CacheResultBuilder(startTime: Long.MAX_VALUE))
+        buildCacheResult(providerCache, loadBalancers, listeners, pools, healthMonitors, new CacheResultBuilder(startTime: Long.MAX_VALUE))
       }
 
       String namespace = LOAD_BALANCERS.ns

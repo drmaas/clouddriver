@@ -27,33 +27,8 @@ import java.util.regex.Pattern
  */
 trait LoadBalancerResolver {
 
-  final String portRegex = ".*internal_port=([0-9]+).*"
-  final Pattern portPattern = Pattern.compile(portRegex)
   final String createdRegex = ".*created_time=([0-9]+).*"
   final Pattern createdPattern = Pattern.compile(createdRegex)
-
-  /**
-   * Parse the internal port from a load balancer description in the following format.
-   * <br><br>
-   * {@code
-   *  ...,internal_port=8100,...
-   * }
-   * @param description
-   * @return the port value
-   */
-  Integer parseInternalPort(final String description) {
-    String s = match(description, portPattern)
-    s ? s.toInteger() : null
-  }
-
-  /**
-   * Generate key=value port string, e.g. internal_port=8100
-   * @param port
-   * @return
-   */
-  String generateInternalPort(int port) {
-    "internal_port=${port}"
-  }
 
   /**
    * Generate key=value port string, e.g. internal_port=8100,internal_protocol=HTTP
