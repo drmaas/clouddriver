@@ -40,24 +40,24 @@ class OpenstackLoadBalancer implements Serializable, LoadBalancerResolver {
   String status
   String method
   Set<OpenstackLoadBalancerListener> listeners
-  HealthMonitorV2 healthMonitor
+  OpenstackHealthMonitor healthMonitor
 
   static OpenstackLoadBalancer from(LoadBalancerV2 loadBalancer, Set<ListenerV2> listeners, LbPoolV2 pool,
                                     HealthMonitorV2 healthMonitor, String account, String region) {
     if (!loadBalancer) {
-      throw new IllegalArgumentException("Pool must not be null.")
+      throw new IllegalArgumentException("Load balancer must not be null.")
     }
-    Set<OpenstackLoadBalancerListener> openstackListeners = listeners.collect { listener ->
-      new OpenstackLoadBalancerListener(externalProtocol: listener.protocol, externalPort: listener.protocolPort,
-      internalProtocol: listener.protocol, internalPort: parseInternalPort(listener.description))
-    }
+    Set<OpenstackLoadBalancerListener> openstackListeners = listeners?.collect { listener ->
+      String internalPort = parseListenerKey(listener.description)['internalPort']
+      new OpenstackLoadBalancerListener(externalProtocol: listener.protocol.toString(), externalPort: listener.protocolPort.toString(),
+        internalProtocol: listener.protocol.toString(), internalPort: internalPort)
+    }?.toSet() ?: [].toSet()
+    OpenstackHealthMonitor openstackHealthMonitor = healthMonitor ? new OpenstackHealthMonitor(id: healthMonitor.id,
+      adminStateUp: healthMonitor.adminStateUp, delay: healthMonitor.delay, maxRetries: healthMonitor.maxRetries,
+      expectedCodes: healthMonitor.expectedCodes, httpMethod: healthMonitor.httpMethod) : null
     new OpenstackLoadBalancer(account: account, region: region, id: loadBalancer.id, name: loadBalancer.name,
       description: loadBalancer.description, status: loadBalancer.operatingStatus,
-      method: pool.lbMethod.toString(), listeners: openstackListeners, healthMonitor: healthMonitor)
-  }
-
-  Integer getInternalPort() {
-    parseInternalPort(description)
+      method: pool?.lbMethod?.toString(), listeners: openstackListeners, healthMonitor: openstackHealthMonitor)
   }
 
   Long getCreatedTime() {
@@ -65,15 +65,42 @@ class OpenstackLoadBalancer implements Serializable, LoadBalancerResolver {
   }
 
   @Canonical
-  static class View implements LoadBalancer {
-    @Delegate
-    OpenstackLoadBalancer loadBalancer
+  static class OpenstackLoadBalancerListener {
+    String externalProtocol
+    String externalPort
+    String internalProtocol
+    String internalPort
+  }
+
+  @Canonical
+  static class OpenstackHealthMonitor {
+    String id
+    boolean adminStateUp
+    Integer delay
+    Integer maxRetries
+    String expectedCodes
+    String httpMethod
+  }
+
+  @Canonical
+  @JsonIgnoreProperties(['portRegex','portPattern','createdRegex','createdPattern'])
+  static class View extends OpenstackLoadBalancer implements LoadBalancer {
     String ip = ""
     String subnetId = ""
     String subnetName = ""
     String networkId = ""
     String networkName = ""
     Set<LoadBalancerServerGroup> serverGroups = [].toSet()
+  }
+
+  //TODO replace once lbaas upsert op is in place
+  static Map<String, String> parseListenerKey(String key) {
+    Map<String, String> result = [:]
+    String[] parts = key.split(':')
+    if (parts.length == 4) {
+      result << [externalProtocol: parts[0], externalPort: parts[1], internalProtocol: parts[2], internalPort: parts[3]]
+    }
+    result
   }
 
 }

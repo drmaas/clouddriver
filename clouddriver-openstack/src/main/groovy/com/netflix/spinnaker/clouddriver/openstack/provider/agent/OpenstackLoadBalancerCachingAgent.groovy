@@ -112,10 +112,20 @@ class OpenstackLoadBalancerCachingAgent extends AbstractOpenstackCachingAgent im
       if (shouldUseOnDemandData(cacheResultBuilder, loadBalancerKey)) {
         moveOnDemandDataToNamespace(objectMapper, typeReference, cacheResultBuilder, loadBalancerKey)
       } else {
-        Set<ListenerV2> resultlisteners = listeners.findAll { listener -> listener.loadBalancers[0].id == loadBalancer.id }.toSet()
-        LbPoolV2 pool = resultlisteners.collect { listener -> pools.find { pool -> pool.id == listener.defaultPoolId } }.first()
-        HealthMonitorV2 healthMonitor = healthMonitors.find { healthMonitor -> healthMonitor.id == pool.healthMonitorId }
-
+        Set<ListenerV2> resultlisteners = [].toSet()
+        LbPoolV2 pool = null
+        HealthMonitorV2 healthMonitor = null
+        if (listeners) {
+          resultlisteners = loadBalancer.listeners.collect { lblistener ->
+            listeners.find { listener -> listener.id == lblistener.id }
+          }
+          if (resultlisteners) {
+            pool = resultlisteners.collect { listener -> pools.find { p -> p.id == listener.defaultPoolId } }.first()
+            if (pool) {
+              healthMonitor = healthMonitors.find { hm -> hm.id == pool.healthMonitorId }
+            }
+          }
+        }
         //create load balancer. Server group relationships are not cached here as they are cached in the server group caching agent.
         OpenstackLoadBalancer openstackLoadBalancer = OpenstackLoadBalancer.from(loadBalancer, resultlisteners, pool, healthMonitor, accountName, region)
 
@@ -123,13 +133,13 @@ class OpenstackLoadBalancerCachingAgent extends AbstractOpenstackCachingAgent im
         Collection<String> ipFilters = providerCache.filterIdentifiers(FLOATING_IPS.ns, Keys.getFloatingIPKey('*', accountName, region))
         Collection<CacheData> ipsData = providerCache.getAll(FLOATING_IPS.ns, ipFilters, RelationshipCacheFilter.none())
         CacheData ipCacheData = ipsData.find { i -> i.attributes?.fixedIpAddress == loadBalancer.vipAddress }
-        String floatingIpKey = Keys.getFloatingIPKey(ipCacheData.id, accountName, region)
+        String floatingIpKey = ipCacheData?.id
 
         //subnets cached
         String subnetKey = Keys.getSubnetKey(loadBalancer.vipSubnetId, accountName, region)
 
         //networks cached
-        String networkKey = Keys.getNetworkKey(ipCacheData.attributes.networkId.toString(), accountName, region)
+        String networkKey = ipCacheData ? Keys.getNetworkKey(ipCacheData.attributes.networkId.toString(), accountName, region) : null
 
         cacheResultBuilder.namespace(LOAD_BALANCERS.ns).keep(loadBalancerKey).with {
           attributes = objectMapper.convertValue(openstackLoadBalancer, ATTRIBUTES)

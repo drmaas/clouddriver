@@ -64,7 +64,7 @@ class OpenstackLoadBalancerProvider implements LoadBalancerProvider<OpenstackLoa
     //get all load balancers tied to this app (via their name)
     Collection<String> identifiers = cacheView.filterIdentifiers(LOAD_BALANCERS.ns, Keys.getLoadBalancerKey(application, '*', '*', '*'))
     identifiers.addAll(cacheView.filterIdentifiers(LOAD_BALANCERS.ns, Keys.getLoadBalancerKey("$application-*", '*', '*', '*')))
-    Collection<CacheData> data = cacheView.getAll(LOAD_BALANCERS.ns, identifiers, RelationshipCacheFilter.include(SERVER_GROUPS.ns))
+    Collection<CacheData> data = cacheView.getAll(LOAD_BALANCERS.ns, identifiers, RelationshipCacheFilter.include(SERVER_GROUPS.ns, FLOATING_IPS.ns, NETWORKS.ns, SUBNETS.ns))
     !data ? Sets.newHashSet() : data.collect(this.&fromCacheData)
   }
 
@@ -78,7 +78,7 @@ class OpenstackLoadBalancerProvider implements LoadBalancerProvider<OpenstackLoa
   Set<OpenstackLoadBalancer.View> getLoadBalancers(String account, String region, String id) {
     String pattern = Keys.getLoadBalancerKey('*', id, account, region)
     Collection<String> identifiers = cacheView.filterIdentifiers(LOAD_BALANCERS.ns, pattern)
-    Collection<CacheData> data = cacheView.getAll(LOAD_BALANCERS.ns, identifiers, RelationshipCacheFilter.include(SERVER_GROUPS.ns))
+    Collection<CacheData> data = cacheView.getAll(LOAD_BALANCERS.ns, identifiers, RelationshipCacheFilter.include(SERVER_GROUPS.ns, FLOATING_IPS.ns, NETWORKS.ns, SUBNETS.ns))
     !data ? Sets.newHashSet() : data.collect(this.&fromCacheData)
   }
 
@@ -89,7 +89,9 @@ class OpenstackLoadBalancerProvider implements LoadBalancerProvider<OpenstackLoa
    */
   OpenstackLoadBalancer.View fromCacheData(CacheData cacheData) {
     //get relationship data
+    println cacheData.relationships.toString()
     OpenstackFloatingIP ip = getRelationshipData(cacheData, FLOATING_IPS.ns, OpenstackFloatingIP)
+    println ip.toString()
     OpenstackNetwork network = getRelationshipData(cacheData, NETWORKS.ns, OpenstackNetwork)
     OpenstackSubnet subnet = getRelationshipData(cacheData, SUBNETS.ns, OpenstackSubnet)
 
@@ -106,12 +108,15 @@ class OpenstackLoadBalancerProvider implements LoadBalancerProvider<OpenstackLoa
       }
       loadBalancerServerGroup
     }?.toSet()
-    new OpenstackLoadBalancer.View(loadBalancer: loadBalancer, ip: ip.floatingIpAddress, subnetId: subnet.id, subnetName: subnet.name,
-      networkId: network.id, networkName: network.name, serverGroups: serverGroups ?: [].toSet())
+    new OpenstackLoadBalancer.View(account: loadBalancer.account, region: loadBalancer.region, id: loadBalancer.id, name: loadBalancer.name,
+      description: loadBalancer.description, status: loadBalancer.status, method: loadBalancer.status,
+      listeners: loadBalancer.listeners, healthMonitor: loadBalancer.healthMonitor, ip: ip?.floatingIpAddress,
+      subnetId: subnet?.id, subnetName: subnet?.name,
+      networkId: network?.id, networkName: network?.name, serverGroups: serverGroups ?: [].toSet())
   }
 
   private <T> T getRelationshipData(CacheData parent, String type, Class<T> clazz) {
-    CacheData cacheData = cacheView.getAll(type, parent.relationships[type])?.first()
+    CacheData cacheData = cacheView.getAll(type, parent.relationships[type] ?: [])?.find()
     objectMapper.convertValue(cacheData?.attributes, clazz)
   }
 
