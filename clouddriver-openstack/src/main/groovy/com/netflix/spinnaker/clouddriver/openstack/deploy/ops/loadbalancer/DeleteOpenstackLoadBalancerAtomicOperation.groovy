@@ -68,8 +68,8 @@ class DeleteOpenstackLoadBalancerAtomicOperation implements AtomicOperation<Void
       task.updateStatus BASE_PHASE, "Fetched status tree."
 
       if (loadBalancerStatus) {
-        if (loadBalancerStatus.provisioningStatus != "ACTIVE") {
-          throw new OpenstackOperationException(AtomicOperations.DELETE_LOAD_BALANCER, "Load balancer $loadBalancerId must have ACTIVE provisioning status to be deleted. Current status is $loadBalancerStatus.provisioningStatus")
+        if (loadBalancerStatus.provisioningStatus.contains("PENDING")) {
+          throw new OpenstackOperationException(AtomicOperations.DELETE_LOAD_BALANCER, "Load balancer $loadBalancerId must not be in PENDING provisioning status to be deleted. Current status is $loadBalancerStatus.provisioningStatus")
         }
         //step 1 - delete load balancer
         deleteLoadBalancer(loadBalancerStatus)
